@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingreso de medicamentos</title>
+<style>
+  :root { --bg:#f3f6f6; --card:#fff; --ink:#18302f; --muted:#5d7270; --line:#d5dfde; --brand:#0f6b66; --danger:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.4rem; margin:4px 0 12px; }
+  h2 { font-size:1.1rem; margin:0 0 10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  label { display:block; font-weight:600; margin:10px 0 4px; }
+  input { width:100%; font:inherit; font-size:1.1rem; padding:12px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); }
+  input:focus, button:focus-visible { outline:3px solid #7fc4bf; outline-offset:1px; }
+  .row { display:flex; gap:8px; }
+  .row input { flex:1; min-width:0; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  button { font:inherit; font-weight:600; padding:12px 16px; border:0; border-radius:6px; background:var(--brand); color:#fff; cursor:pointer; }
+  button.sec { background:#e3eeed; color:var(--brand); }
+  button.danger { background:#fff; color:var(--danger); border:1px solid var(--danger); }
+  button.small { padding:6px 10px; font-size:.85rem; }
+  .full { width:100%; margin-top:14px; }
+  .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  #reader { margin-top:10px; }
+  #video { width:100%; max-height:300px; background:#000; border-radius:6px; }
+  #msg { min-height:1.4em; margin:8px 0 0; font-weight:600; }
+  #msg.err { color:var(--danger); }
+  #msg.ok { color:var(--brand); }
+  .count { color:var(--muted); margin:0 0 10px; }
+  .scroll { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { background:#eef4f3; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ingreso de medicamentos</h1>
+
+  <section class="card">
+    <label for="barcode">Código de barras</label>
+    <div class="row">
+      <input id="barcode" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="next" placeholder="Escanear o escribir" autofocus>
+      <button id="btnScan" class="sec" type="button" tabindex="-1">Escanear con cámara</button>
+    </div>
+    <div id="reader" hidden>
+      <video id="video" playsinline muted hidden></video>
+      <div id="qr"></div>
+      <button id="btnStop" class="sec full" type="button" tabindex="-1">Cerrar cámara</button>
+    </div>
+
+    <label for="lote">Lote</label>
+    <input id="lote" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="next" placeholder="Número de lote">
+
+    <div class="grid">
+      <div>
+        <label for="venc">Vencimiento (mm/aa)</label>
+        <input id="venc" type="text" inputmode="numeric" maxlength="5" autocomplete="off" enterkeyhint="next" placeholder="mm/aa">
+      </div>
+      <div>
+        <label for="cant">Cantidad</label>
+        <input id="cant" type="number" inputmode="numeric" min="1" enterkeyhint="done" placeholder="Unidades">
+      </div>
+    </div>
+
+    <button id="btnSave" class="full" type="button">Guardar lectura</button>
+    <p id="msg" role="status"></p>
+  </section>
+
+  <section class="card">
+    <h2>Lecturas guardadas</h2>
+    <p class="count" id="count"></p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>N.º</th><th>Fecha y hora</th><th>Código</th><th>Lote</th><th>Vence</th><th>Cant.</th><th></th></tr></thead>
+        <tbody id="list"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Resumen por producto y lote</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Código</th><th>Lote</th><th>Total</th></tr></thead>
+        <tbody id="summary"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Archivo del embarque</h2>
+    <p class="count">Las lecturas se guardan en este teléfono y siguen aquí al día siguiente. Descargar no borra nada.</p>
+    <div class="actions">
+      <button id="btnDownload" type="button">Descargar CSV</button>
+      <button id="btnClear" class="danger" type="button">Vaciar todo</button>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  var KEY = "inventario_codigos_v1";
+  var state = { items: [], next: 1 };
+  var $ = function (id) { return document.getElementById(id); };
+  var barcode = $("barcode"), lote = $("lote"), venc = $("venc"), cant = $("cant"), msg = $("msg");
+
+  function load() {
+    try {
+      var s = JSON.parse(localStorage.getItem(KEY));
+      if (s && Array.isArray(s.items)) { state = s; }
+    } catch (e) {}
+  }
+  function persist() {
+    try { localStorage.setItem(KEY, JSON.stringify(state)); }
+    catch (e) { say("No se pudo guardar en este navegador. Descarga el CSV ahora.", true); }
+  }
+  function say(text, isErr) {
+    msg.textContent = text;
+    msg.className = isErr ? "err" : "ok";
+  }
+  function stamp() {
+    var d = new Date(), p = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes());
+  }
+
+  function save() {
+    var code = barcode.value.trim().toUpperCase();
+    var lot = lote.value.trim().toUpperCase();
+    var exp = venc.value.trim();
+    var qty = parseInt(cant.value, 10);
+    if (!code) { say("Falta el código de barras.", true); barcode.focus(); return; }
+    if (!lot) { say("Falta el lote.", true); lote.focus(); return; }
+    if (!/^(0[1-9]|1[0-2])\/\d{2}$/.test(exp)) { say("El vencimiento debe tener el formato mm/aa, por ejemplo 08/27.", true); venc.focus(); return; }
+    if (isNaN(qty) || qty < 1) { say("La cantidad debe ser un número mayor a 0.", true); cant.focus(); return; }
+    state.items.push({ n: state.next, t: stamp(), code: code, lot: lot, exp: exp, qty: qty });
+    state.next++;
+    persist();
+    barcode.value = lote.value = venc.value = cant.value = "";
+    say("Lectura guardada.", false);
+    render();
+    barcode.focus();
+  }
+
+  function cell(tr, text) { var td = document.createElement("td"); td.textContent = text; tr.appendChild(td); }
+
+  function render() {
+    var list = $("list"), sum = $("summary");
+    list.textContent = ""; sum.textContent = "";
+    var totals = {}, order = [];
+    state.items.forEach(function (it) {
+      var tr = document.createElement("tr");
+      [it.n, it.t, it.code, it.lot, it.exp, it.qty].forEach(function (v) { cell(tr, v); });
+      var td = document.createElement("td"), b = document.createElement("button");
+      b.type = "button"; b.className = "danger small"; b.textContent = "Quitar";
+      b.addEventListener("click", function () { removeItem(it.n); });
+      td.appendChild(b); tr.appendChild(td);
+      list.appendChild(tr);
+      var k = it.code + "\u0000" + it.lot;
+      if (!(k in totals)) { totals[k] = { code: it.code, lot: it.lot, qty: 0 }; order.push(k); }
+      totals[k].qty += it.qty;
+    });
+    order.forEach(function (k) {
+      var tr = document.createElement("tr");
+      cell(tr, totals[k].code); cell(tr, totals[k].lot); cell(tr, totals[k].qty);
+      sum.appendChild(tr);
+    });
+    var n = state.items.length;
+    $("count").textContent = n === 0 ? "Aún no hay lecturas. Escanea el primer medicamento." : n + (n === 1 ? " lectura guardada." : " lecturas guardadas.");
+  }
+
+  function removeItem(n) {
+    if (!confirm("¿Quitar la lectura número " + n + "?")) return;
+    state.items = state.items.filter(function (it) { return it.n !== n; });
+    persist(); render();
+  }
+
+  function csvField(v) {
+    v = String(v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  }
+  function download() {
+    if (!state.items.length) { say("No hay lecturas para descargar.", true); return; }
+    var rows = ["Número,Timestamp,Código de Barras,Lote,Fecha de Vencimiento,Cantidad"];
+    state.items.forEach(function (it) {
+      rows.push([it.n, it.t, it.code, it.lot, it.exp, it.qty].map(csvField).join(","));
+    });
+    var blob = new Blob(["\uFEFF" + rows.join("\n") + "\n"], { type: "text/csv;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "lectura_" + stamp() + ".csv";
+    a.style.display = "none";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    say("Archivo descargado. Las lecturas siguen guardadas.", false);
+  }
+
+  function clearAll() {
+    var n = state.items.length;
+    if (!n) { say("No hay lecturas que vaciar.", true); return; }
+    if (!confirm("Se borrarán las " + n + " lecturas y el resumen. Esta acción no se puede deshacer. ¿Ya descargaste el CSV?")) return;
+    state = { items: [], next: 1 };
+    persist(); render();
+    say("Todo vaciado. Puedes empezar un embarque nuevo.", false);
+  }
+
+  // ---- Cámara ----
+  var stream = null, timer = null, h5 = null, scanning = false;
+
+  function onCode(code) {
+    if (!scanning) return;
+    barcode.value = String(code).toUpperCase();
+    if (navigator.vibrate) navigator.vibrate(100);
+    stopScan();
+    say("Código leído.", false);
+    lote.focus();
+  }
+  function stopScan() {
+    scanning = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    if (h5) { var h = h5; h5 = null; h.stop().then(function () { h.clear(); }).catch(function () {}); }
+    $("video").hidden = true;
+    $("reader").hidden = true;
+  }
+  function loadScript(src) {
+    return new Promise(function (ok, fail) {
+      var s = document.createElement("script");
+      s.src = src; s.onload = ok; s.onerror = fail;
+      document.head.appendChild(s);
+    });
+  }
+  function camError(e) {
+    var n = (e && e.name) || "Error";
+    var hints = {
+      NotAllowedError: "El permiso de la cámara está bloqueado. En Chrome toca el candado junto a la dirección, entra a Permisos y activa Cámara. Si abriste la página dentro de WhatsApp, Drive o una vista previa, ábrela en Chrome.",
+      NotFoundError: "El teléfono no encontró una cámara disponible.",
+      NotReadableError: "Otra app está usando la cámara. Ciérrala e inténtalo de nuevo.",
+      SecurityError: "El navegador bloqueó la cámara por seguridad. Abre la página con su enlace https:// en Chrome."
+    };
+    say((hints[n] || "No se pudo abrir la cámara.") + " (" + n + ")", true);
+  }
+  async function startScan() {
+    if (location.protocol === "file:") {
+      say("La página está abierta como archivo del teléfono y Chrome no permite la cámara así. Ábrela desde su enlace https://.", true);
+      return;
+    }
+    if (!navigator.mediaDevices || !window.isSecureContext) {
+      say("La cámara solo funciona si la página se abre con https://. Revisa cómo está alojada.", true);
+      return;
+    }
+    $("reader").hidden = false;
+    scanning = true;
+    var blocked = function (e) { return e && (e.name === "NotAllowedError" || e.name === "SecurityError"); };
+    if ("BarcodeDetector" in window) {
+      try {
+        var det = new BarcodeDetector();
+        var video = $("video");
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
+        video.srcObject = stream; video.hidden = false;
+        await video.play();
+        timer = setInterval(async function () {
+          try { var r = await det.detect(video); if (r.length) onCode(r[0].rawValue); } catch (e) {}
+        }, 250);
+        return;
+      } catch (e) {
+        if (timer) { clearInterval(timer); timer = null; }
+        if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+        $("video").hidden = true;
+        if (blocked(e) || e.name === "NotFoundError" || e.name === "NotReadableError") { stopScan(); camError(e); return; }
+      }
+    }
+    try {
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js");
+      h5 = new Html5Qrcode("qr");
+      await h5.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 260, height: 140 } }, onCode, function () {});
+    } catch (e) {
+      stopScan(); camError(e);
+    }
+  }
+
+  // ---- Eventos ----
+  venc.addEventListener("input", function () {
+    var d = venc.value.replace(/\D/g, "").substring(0, 4);
+    venc.value = d.length >= 2 ? d.substring(0, 2) + "/" + d.substring(2) : d;
+  });
+  function nextOnEnter(from, to) {
+    from.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.keyCode === 13) { e.preventDefault(); to.focus(); }
+    });
+  }
+  nextOnEnter(barcode, lote); nextOnEnter(lote, venc); nextOnEnter(venc, cant);
+  cant.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.keyCode === 13) { e.preventDefault(); save(); } });
+  [barcode, lote, venc, cant].forEach(function (el) {
+    el.addEventListener("input", function () { msg.textContent = ""; });
+  });
+  $("btnSave").addEventListener("click", save);
+  $("btnDownload").addEventListener("click", download);
+  $("btnClear").addEventListener("click", clearAll);
+  $("btnScan").addEventListener("click", startScan);
+  $("btnStop").addEventListener("click", stopScan);
+
+  load(); render();
+})();
+</script>
+</body>
+</html>
